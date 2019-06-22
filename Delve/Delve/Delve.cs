@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Remoting.Metadata.W3cXsd2001;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using SharpDX;
@@ -16,20 +18,25 @@ using PoeHUD.Plugins;
 using PoeHUD.Poe.Components;
 using PoeHUD.Poe.RemoteMemoryObjects;
 using PoeHUD.Poe.Elements;
+using Delve.Libs;
+
 
 namespace Delve
 {
     public partial class Delve : BaseSettingsPlugin<DelveSettings>
     {
-        private RectangleF DrawRect;
+        private RectangleF _drawRect;
 
+        //This is never called
         public float CurrentDelveMapZoom = 0.635625f;
 
-        private HashSet<EntityWrapper> DelveEntities;
+        private HashSet<EntityWrapper> _delveEntities;
 
         public Version version = Assembly.GetExecutingAssembly().GetName().Version;
         public string PluginVersion;
         public DateTime buildDate;
+
+        //This is never called
         public static int Selected;
 
         public static int idPop;
@@ -38,11 +45,16 @@ namespace Delve
 
         public string PoeHudImageLocation;
 
-        private string AreaName;
-        private bool IsAzuriteMine => AreaName == "Azurite Mine" ? true : false;
+        private string _areaName;
+        private bool _isAzuriteMine => _areaName == "Azurite Mine" ? true : false;
 
         public FossilTiers FossilList = new FossilTiers();
+        
+        //needed to be added for custom delve file
+        public DelveContainersTires DelveContainersList = new DelveContainersTires();
+
         public LargeMapData LargeMapInformation { get; set; }
+
 
         public override void Initialise()
         {
@@ -50,88 +62,403 @@ namespace Delve
 
             PluginName = "Delve";
             PluginVersion = $"{version}";
-            DelveEntities = new HashSet<EntityWrapper>();
+            _delveEntities = new HashSet<EntityWrapper>();
             PoeHudImageLocation = PluginDirectory + @"\..\..\textures\";
             CustomImagePath = PluginDirectory + @"\Resources\";
 
-            GameController.Area.OnAreaChange += AreaChange;
+            OnAreaChange += AreaChange;
 
             if (File.Exists($@"{PluginDirectory}\Fossil_Tiers.json"))
             {
                 var jsonFile = File.ReadAllText($@"{PluginDirectory}\Fossil_Tiers.json");
                 FossilList = JsonConvert.DeserializeObject<FossilTiers>(jsonFile, JsonSettings);
+
             }
             else
             {
-                LogError("Error loading Fossil_Tiers.json, Please re download from Random Features github repository", 10);
+                LogError("Error loading Fossil_Tiers.json, Please re download from Random Features github repository",
+                    10);
             }
+
+            //load Delve Chest jason file
+            if (File.Exists($@"{PluginDirectory}\DelveContainers.json"))
+            {
+                var DelveContainers = File.ReadAllText($@"{PluginDirectory}\DelveContainers.json");
+                DelveContainersList = JsonConvert.DeserializeObject<DelveContainersTires>(DelveContainers, JsonDelveContainers);
+            }
+
+            else
+            {
+                LogError("Error loading DelveContainers.json, Please re download from Random Features github repository",
+                    10);
+            }
+            //end of new json file load
+
+            StringNicer.InitList();
         }
 
         public static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
         {
             MetadataPropertyHandling = MetadataPropertyHandling.Ignore,
             DateParseHandling = DateParseHandling.None,
-            Converters = {
-                new IsoDateTimeConverter { DateTimeStyles = DateTimeStyles.AssumeUniversal }
+            Converters =
+            {
+                new IsoDateTimeConverter {DateTimeStyles = DateTimeStyles.AssumeUniversal}
+            },
+        };
+
+        //cloned for new json file 
+        public static readonly JsonSerializerSettings JsonDelveContainers = new JsonSerializerSettings
+        {
+            MetadataPropertyHandling = MetadataPropertyHandling.Ignore,
+            DateParseHandling = DateParseHandling.None,
+            Converters =
+            {
+                new IsoDateTimeConverter {DateTimeStyles = DateTimeStyles.AssumeUniversal}
             },
         };
 
         private void AreaChange(AreaController area)
         {
-            DelveEntities.Clear();
-            AreaName = area.CurrentArea.Name;
+            _delveEntities.Clear();
+            _areaName = area.CurrentArea.Name;
         }
 
-        private void DrawData(string icon, string data)
+        private void _drawData(string icon, string data)
         {
             var textSize = Graphics.MeasureText(data, 20, FontDrawFlags.Left | FontDrawFlags.VerticalCenter);
 
-            DrawRect.Width = DrawRect.Height + textSize.Width + 10;
+            _drawRect.Width = _drawRect.Height + textSize.Width + 10;
 
-            Graphics.DrawBox(DrawRect, Color.Black);
+            Graphics.DrawBox(_drawRect, Color.Black);
 
-            var imgRect = DrawRect;
+            var imgRect = _drawRect;
             imgRect.Width = imgRect.Height;
             Graphics.DrawPluginImage(Path.Combine(PluginDirectory, icon), imgRect);
-            Graphics.DrawFrame(DrawRect, 2, Color.Gray);
+            Graphics.DrawFrame(_drawRect, 2, Color.Gray);
 
-            var textPos = DrawRect.TopLeft;
-            textPos.Y += DrawRect.Height / 2;
-            textPos.X += DrawRect.Height + 3;
+            var textPos = _drawRect.TopLeft;
+            textPos.Y += _drawRect.Height / 2;
+            textPos.X += _drawRect.Height + 3;
 
             Graphics.DrawText(data, 20, textPos, FontDrawFlags.Left | FontDrawFlags.VerticalCenter);
 
 
 
-            DrawRect.X += DrawRect.Width + 1;
+            _drawRect.X += _drawRect.Width + 1;
         }
 
         public override void Render()
         {
             base.Render();
-            if (!Settings.Enable || !IsAzuriteMine) return;
-            SubterraneanChart MineMap = GameController.Game.IngameState.IngameUi.MineMap;
-            if (Settings.DelveMineMapConnections.Value) DrawMineMapConnections(MineMap);
-            if(!MineMap.IsVisible) RenderMapImages();
-            if (Settings.DebugHotkey.PressedOnce())
-                Settings.DebugMode.Value = !Settings.DebugMode.Value;
-            if (Settings.DebugMode.Value)
+
+            if (!Settings.Enable.Value || !_isAzuriteMine) return;
             {
-                foreach (var entity in DelveEntities.ToArray())
+                foreach (var entity in _delveEntities.ToArray())
                 {
-                    if (entity.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveWall") || entity.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveLight"))
-                        continue;
-                    if (Settings.ShouldHideOnOpen.Value && entity.GetComponent<Chest>().IsOpened)
-                        continue;
-                    var TextToDisplay = entity.Path.Replace("Metadata/Chests/DelveChests/", "");
-                    var textBox = Graphics.MeasureText(TextToDisplay, 0, FontDrawFlags.Center);
-                    var screenPosition = GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
-                    Graphics.DrawBox(new RectangleF((screenPosition.X - textBox.Width/2) - 10, screenPosition.Y - textBox.Height/2, textBox.Width + 20, textBox.Height * 2), Color.White);
-                    Graphics.DrawText(TextToDisplay, 20, screenPosition, Color.Black, FontDrawFlags.Center);
+                    //Generic trash containers
+                    // add and statement to check if display label is turned onn if (Settings.path)
+
+                    if (DelveContainersList.OnPath.ToList().Any(s => string.Equals(s, entity.Path, StringComparison.CurrentCultureIgnoreCase)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition = GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelvePathwayChestLabelColor);
+
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelvePathwayChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    else if (DelveContainersList.OffPath.ToList().Any(s => s.Contains(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition = GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelvePathwayChestLabelColor);
+
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelvePathwayChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.DynamiteSupplies.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveMiningSuppliesDynamiteChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveMiningSuppliesDynamiteChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.FlareSupplies.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveMiningSuppliesFlaresChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveMiningSuppliesFlaresChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.Currency.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveCurrencyChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveCurrencyChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.Auzrite.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveAzuriteVeinChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveAzuriteVeinChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.Resonators.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveResonatorChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveResonatorChestLabelTextColor, FontDrawFlags.Center);
+                    }
+
+                    
+                    else if (DelveContainersList.Fossils.ToList().Any(s => s.Equals(entity.Path)))
+                    {
+                        var TextToDisplay = "";
+
+                        var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                        switch (Settings.NiceString.Value)
+                        {
+                            case true:
+                                TextToDisplay = stringifyReturn.IsFound
+                                    ? stringifyReturn.NiceString
+                                    : stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                            case false:
+                                TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                break;
+                        }
+
+                        var textBox = Graphics.MeasureText(TextToDisplay, 20, FontDrawFlags.Center);
+
+                        var screenPosition =
+                            GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+                        Graphics.DrawBox(
+                            new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                            Settings.DelveFossilChestLabelColor);
+                        Graphics.DrawText(TextToDisplay, 20, screenPosition,
+                            Settings.DelveFossilChestLabelTextColor, FontDrawFlags.Center);
+                    }
+                
+                    //debug portion
+                    else
+                    {
+                            if (!Settings.Enable || !_isAzuriteMine)
+                                return;
+                            var MineMap = GameController.Game.IngameState.IngameUi.MineMap;
+                            if (Settings.DelveMineMapConnections.Value)
+                                DrawMineMapConnections(MineMap);
+
+                            if (!MineMap.IsVisible)
+                                RenderMapImages();
+
+
+                            if (Settings.DebugHotkey.PressedOnce())
+                                Settings.DebugMode.Value = !Settings.DebugMode.Value;
+
+                            if (Settings.DebugMode.Value)
+                            {
+                                if (entity.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveWall") ||
+                                    entity.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveLight"))
+                                    continue;
+
+                                if (Settings.ShouldHideOnOpen.Value && entity.GetComponent<Chest>().IsOpened)
+                                    continue;
+
+                                var TextToDisplay = "";
+
+                                var stringifyReturn = StringNicer.GetCoolStrings(entity.Path);
+
+                                switch (Settings.NiceString.Value)
+                                {
+                                    case true:
+                                        TextToDisplay = stringifyReturn.IsFound
+                                            ? stringifyReturn.NiceString
+                                            : stringifyReturn.UglyString.Split('/').Last();
+                                        break;
+                                    case false:
+                                        TextToDisplay = stringifyReturn.UglyString.Split('/').Last();
+                                        break;
+                                }
+
+                                var textBox =
+                                    Graphics.MeasureText(TextToDisplay, 20,
+                                        FontDrawFlags
+                                            .Center); // NEEDED FONT SIZE AS INPUT TO MEASURE  -- Debug never had this
+                                var screenPosition =
+                                    GameController.Game.IngameState.Camera.WorldToScreen(entity.Pos, entity);
+
+                                Graphics.DrawBox(
+                                    new RectangleF(screenPosition.X - textBox.Width / 2 - 10,
+                                        screenPosition.Y - textBox.Height / 2, textBox.Width + 20, textBox.Height * 2),
+                                    Color.White);
+
+                                Graphics.DrawText(TextToDisplay, 20, screenPosition, Color.Black, FontDrawFlags.Center);
+                            }
+                        }
                 }
             }
         }
-
         public class LargeMapData
         {
             public Camera @Camera { get; set; }
@@ -211,7 +538,7 @@ namespace Delve
         {
             if (Settings.DelvePathWays)
             {
-                if (e.Path == "Metadata/Terrain/Leagues/Delve/Objects/DelveLight")
+                if (e.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveLight"))
                 {
                     return new MapIcon(e, new HudTexture(CustomImagePath + "abyss-crack.png", Settings.DelvePathWaysNodeColor), () => true,
                             Settings.DelvePathWaysNodeSize);
@@ -230,7 +557,10 @@ namespace Delve
                         return new MapIcon(e, new HudTexture(CustomImagePath + "Bombs.png", Settings.DelveMiningSuppliesDynamiteChestColor),
                             () => Settings.DelveMiningSuppliesDynamiteChest, Settings.DelveMiningSuppliesDynamiteChestSize);
                     }
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteGeneric"))
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteGeneric")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteArmour")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteWeapon")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteTrinkets"))
                     {
                         return new MapIcon(e, new HudTexture(CustomImagePath + "Bombs.png", Settings.DelveMiningSuppliesDynamiteChestColor),
                             () => Settings.DelveMiningSuppliesDynamiteChest, Settings.DelveMiningSuppliesDynamiteChestSize);
@@ -244,6 +574,7 @@ namespace Delve
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathCurrency")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/PathCurrency")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencySockets")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericCurrency"))
                     {
                         return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
@@ -264,38 +595,10 @@ namespace Delve
                             () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
                     }
 
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteCurrency")
-                       || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrency")
-                       )
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteCurrency"))
                     {
-                        string tempPath = e.Path.Replace("Metadata/Chests/DelveChests/", "");
-                        if (tempPath.Contains("Currency1") || tempPath == "DynamiteCurrency" || tempPath.Contains("DelveChestCurrencyHighShards"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("Currency2"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize.Value * 2);
-                        else if (tempPath.Contains("Currency3"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize.Value * 3);
-                        else if (tempPath.Contains("DelveChestCurrencySilverCoins"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "SilverCoin.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("DelveChestCurrencyWisdomScrolls"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "WisDomCurrency.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("DelveChestCurrencyDivination"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "divinationCard.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("DelveChestCurrencyMaps"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "Map.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("DelveChestCurrencyVaal"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "Corrupted.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
-                        else if (tempPath.Contains("DelveChestCurrencySockets"))
-                            return new MapIcon(e, new HudTexture(CustomImagePath + "AdditionalSockets.png", Settings.DelveCurrencyChestColor),
-                                () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
+                        return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
+                            () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestArmourBody2AdditionalSockets"))
@@ -323,42 +626,38 @@ namespace Delve
                             () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
                     }
 
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencySilverCoins"))
+                    {
+                        return new MapIcon(e, new HudTexture(CustomImagePath + "SilverCoin.png", Settings.DelveCurrencyChestColor),
+                            () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
+                    }
+
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencyWisdomScrolls"))
+                    {
+                        return new MapIcon(e, new HudTexture(CustomImagePath + "WisDomCurrency.png", Settings.DelveCurrencyChestColor),
+                            () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
+                    }
+
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericDivination")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestArmourDivination")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestWeaponDivination")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestTrinketsDivination")
-                        )
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencyDivination"))
                     {
                         return new MapIcon(e, new HudTexture(CustomImagePath + "divinationCard.png", Settings.DelveCurrencyChestColor),
                             () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
                     }
 
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrency"))
+                    {
+                        return new MapIcon(e, new HudTexture(CustomImagePath + "Currency.png", Settings.DelveCurrencyChestColor),
+                            () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
+                    }
+
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveAzuriteVein"))
                     {
-                        int size = Settings.DelveAzuriteVeinChestSize;
-                        string AzuriteImage = ""; // this will only draw if the path end matches below
-                        if (e.Path.EndsWith("1_1")) // Smallest
-                        {
-                            AzuriteImage = "AzuriteT3.png";
-                        }
-                        else if (e.Path.EndsWith("1_2")) // Medium
-                        {
-                            AzuriteImage = "AzuriteT3.png";
-                        }
-                        else if (e.Path.EndsWith("1_3")) // Large
-                        {
-                            AzuriteImage = "AzuriteT2.png";
-                            size *= 2;
-                        }
-                        else if (e.Path.EndsWith("2_1")) // Huge
-                        {
-                            AzuriteImage = "AzuriteT1.png";
-                            size *= 2;
-                        }
-                        if (AzuriteImage != "")
-                        {
-                            return new MapIcon(e, new HudTexture(CustomImagePath + AzuriteImage), () => Settings.DelveAzuriteVeinChest, size);
-                        }
+                        return new MapIcon(e, new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelveAzuriteVeinChestColor),
+                            () => Settings.DelveAzuriteVeinChest, Settings.DelveAzuriteVeinChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/Resonator3")
@@ -439,13 +738,15 @@ namespace Delve
                             () => Settings.DelveResonatorChest, Settings.DelveResonatorChestSize * 0.7f);
                     }
 
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestMap"))
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencyMaps")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestMap"))
                     {
                         return new MapIcon(e, new HudTexture(CustomImagePath + "Map.png", Settings.DelveCurrencyChestColor),
                             () => Settings.DelveCurrencyChest, Settings.DelveCurrencyChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestArmourCorrupted")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencyVaal")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestWeaponCorrupted")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestTrinketsCorrupted")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityVaalDoubleCorrupted"))
@@ -480,8 +781,7 @@ namespace Delve
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/PathArmour")
-                        || e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathArmour")
-                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteArmour"))
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathArmour"))
                     {
                         return new MapIcon(e,
                             new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
@@ -490,9 +790,7 @@ namespace Delve
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/PathWeapon")
-                        || e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathWeapon")
-                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteWeapon")
-                        )
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathWeapon"))
                     {
                         return new MapIcon(e,
                             new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
@@ -503,15 +801,20 @@ namespace Delve
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/PathTrinkets")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/OffPathTrinkets")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericTrinkets")
-                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DynamiteTrinkets")
                         )
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "rare-amulet.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(CustomImagePath + "rare-amulet.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/ProsperoChest"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "PerandusCoins.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericAdditionalUniques")
@@ -535,18 +838,21 @@ namespace Delve
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestSpecialUniqueLightning")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestSpecialUniqueChaos")
                         || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestSpecialUniqueMana")
+                        || e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssUnique")
                     )
                     {
-                            return new MapIcon(e,
-                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
-                            () => true,
-                            Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                        new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                        () => true,
+                        Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericProphecyItem"))
                     {
                         return new MapIcon(e,
-                            new HudTexture(CustomImagePath + "Prophecy.png"), () => true, Settings.DelvePathwayChestSize);
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericElderItem")
@@ -573,106 +879,162 @@ namespace Delve
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericOffering"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "OfferingChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericDelveUnique"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "DelveChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueOnslaught"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "OnslaughtChest.png"), () => true, Settings.DelvePathwayChestSize * 2);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueAnarchy"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "OnslaughtChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueAmbushInvasion"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AmbushInvasionChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueDomination"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "DominationChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueNemesis"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "NemesisChest.png"), () => true, Settings.DelvePathwayChestSize * 2);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueRampage"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "RampageChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueBeyond"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "BeyondChest.png"), () => true, Settings.DelvePathwayChestSize);
-                    }
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssUnique"))
-                    {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AbyssChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueBloodlines"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "BloodlinesChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueTorment"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "TormentChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueWarbands"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "WarbandsChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueTempest"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "TempestChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueTalisman"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "TalismanChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeaguePerandus"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "PerandusChest.png"), () => true, Settings.DelvePathwayChestSize * 2);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueBreach"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "BreachChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueHarbinger"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "HarbingerChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueAbyss"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AbyssChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueBestiary"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "BestiaryChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestGenericLeagueIncursion"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "IncursionChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestArmourMultipleResists"))
@@ -836,6 +1198,14 @@ namespace Delve
                             Settings.DelvePathwayChestSize);
                     }
 
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCurrencyHighShards"))
+                    {
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
+                    }
+
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestMapChisels"))
                     {
                         return new MapIcon(e,
@@ -918,28 +1288,42 @@ namespace Delve
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssStygian"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "StygianViseChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssJewels"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AbyssJewelChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssHighJewel")) // High iLvl?
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityAbyssHighJewel"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AbyssJewelChest.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityProtoVaalAzurite"))
                     {
-                        return new MapIcon(e,new HudTexture(CustomImagePath + "AzuriteT1.png"), () => true, Settings.DelvePathwayChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
-                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityProtoVaalFossils")) // using base fossil image for now
+                    if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityProtoVaalFossils"))
                     {
-                        return new MapIcon(e, new HudTexture(CustomImagePath + "AbberantFossil.png", Settings.DelveFossilChestColor),
-                            () => Settings.DelveFossilChest, Settings.DelveFossilChestSize);
+                        return new MapIcon(e,
+                            new HudTexture(PoeHudImageLocation + "strongbox.png", Settings.DelvePathwayChestColor),
+                            () => true,
+                            Settings.DelvePathwayChestSize);
                     }
 
                     if (e.Path.StartsWith("Metadata/Chests/DelveChests/DelveChestCityProtoVaalEmblem"))
@@ -1016,7 +1400,7 @@ namespace Delve
 
         public override void EntityAdded(EntityWrapper entityWrapper)
         {
-            if (!IsAzuriteMine)
+            if (!_isAzuriteMine)
                 return;
 
             if (entityWrapper.Path.StartsWith("Metadata/Chests/DelveChests/")
@@ -1024,17 +1408,17 @@ namespace Delve
                 || entityWrapper.Path.StartsWith("Metadata/Terrain/Leagues/Delve/Objects/DelveLight")
             )
             {
-                DelveEntities.Add(entityWrapper);
+                _delveEntities.Add(entityWrapper);
             }
         }
         public override void EntityRemoved(EntityWrapper entityWrapper)
         {
-            if (!IsAzuriteMine)
+            if (!_isAzuriteMine)
                 return;
 
-            if (DelveEntities.Contains(entityWrapper))
+            if (_delveEntities.Contains(entityWrapper))
             {
-                DelveEntities.Remove(entityWrapper);
+                _delveEntities.Remove(entityWrapper);
             }
         }
 
@@ -1050,12 +1434,43 @@ namespace Delve
             public string[] T3 { get; set; }
         }
 
+        //Added for new json file
+        public class DelveContainersTires
+        {
+            [JsonProperty("DelveOnPath")]
+            public string[] OnPath { get; set; }
+
+            [JsonProperty("DelveOffPath")]
+            public string[] OffPath { get; set; }
+
+            [JsonProperty("DelveMiningSuppliesDynamite")]
+            public string[] DynamiteSupplies { get; set; }
+
+            [JsonProperty("DelveMiningSuppliesFlare")]
+            public string[] FlareSupplies { get; set; }
+
+            [JsonProperty("DelveAurize")]
+            public string[] Auzrite { get; set; }
+
+            [JsonProperty("DelveCurrncy")]
+            public string[] Currency { get; set; }
+
+            [JsonProperty("DelveResonators")]
+            public string[] Resonators { get; set; }
+
+            [JsonProperty("DelveFossisls")]
+            public string[] Fossils { get; set; }
+            
+            [JsonProperty("DelveSpecial")]
+            public string[] Special { get; set; }
+        }
+
         private void RenderMapImages()
         {
             if (GameController.Game.IngameState.IngameUi.Map.LargeMap.IsVisible)
             {
                 LargeMapInformation = new LargeMapData(GameController);
-                foreach (var entity in DelveEntities.ToArray())
+                foreach (var entity in _delveEntities.ToArray())
                 {
                     if (entity is null) continue;
                     DrawToLargeMiniMap(entity);
@@ -1063,7 +1478,7 @@ namespace Delve
             }
             else if (GameController.Game.IngameState.IngameUi.Map.SmallMinimap.IsVisible)
             {
-                foreach (var entity in DelveEntities.ToArray())
+                foreach (var entity in _delveEntities.ToArray())
                 {
                     if (entity is null) continue;
                     DrawToSmallMiniMap(entity);
@@ -1071,29 +1486,26 @@ namespace Delve
             }
         }
 
-        private void DrawMineMapConnections(SubterraneanChart MineMap)
+        private void DrawMineMapConnections(SubterraneanChart mineMap)
         {
-            if (!MineMap.IsVisible)
+            if (!mineMap.IsVisible)
                 return;
 
             int width = 0;
             RectangleF connection_area = RectangleF.Empty;
-            RectangleF MineMapArea = MineMap.GetClientRect();
-            float reducedWidth = ((100 - Settings.ShowRadiusPercentage.Value) * MineMapArea.Width)/200;
-            float reduceHeight = ((100 - Settings.ShowRadiusPercentage.Value) * MineMapArea.Height)/200;
+            RectangleF MineMapArea = mineMap.GetClientRect();
+            float reducedWidth = ((100 - Settings.ShowRadiusPercentage.Value) * MineMapArea.Width) / 200;
+            float reduceHeight = ((100 - Settings.ShowRadiusPercentage.Value) * MineMapArea.Height) / 200;
             MineMapArea.Inflate(0 - reducedWidth, 0 - reduceHeight);
-            foreach (var zone in MineMap.GridElement.Children)
+            foreach (var zone in mineMap.GridElement.Children)
             {
                 foreach (var block in zone.Children)
                 {
-                    if (MineMapArea.Contains(block.GetClientRect().Center))
+                    foreach (var connection in block.Children)
                     {
-                        foreach (var connection in block.Children)
-                        {
-                            width = (int)connection.Width;
-                            if ((width == 10 || width == 4))
-                                Graphics.DrawFrame(connection.GetClientRect(), 1, Color.Yellow);
-                        }
+                        width = (int)connection.Width;
+                        if ((width == 10 || width == 4) && MineMapArea.Intersects(connection.GetClientRect()))
+                            Graphics.DrawFrame(connection.GetClientRect(), 1, Color.Yellow);
                     }
                 }
             }

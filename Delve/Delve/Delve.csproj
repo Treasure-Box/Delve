@@ -43,8 +43,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
     <OutputPath>..\..\</OutputPath>
-    <DefineConstants>
-    </DefineConstants>
+    <DefineConstants>TRACE</DefineConstants>
     <Optimize>true</Optimize>
     <DebugType>pdbonly</DebugType>
     <PlatformTarget>x64</PlatformTarget>
@@ -62,7 +61,7 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="PoeHUD">
-      <HintPath>..\..\..\..\..\development-work\PoEHUD\Release\PoeHUD.exe</HintPath>
+      <HintPath>..\..\..\..\PoeHUD.exe</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="SharpDX">
@@ -98,6 +97,7 @@
     <Compile Include="DelveMenu.cs" />
     <Compile Include="DelveSettings.cs" />
     <Compile Include="Libs\ImGuiExtension.cs" />
+    <Compile Include="Libs\StringNicer.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
