@@ -61,12 +61,14 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="PoeHUD">
-      <HintPath>..\..\..\..\PoeHUD.exe</HintPath>
-      <Private>False</Private>
+      <HintPath>..\..\..\..\..\PoeHUD.exe</HintPath>
     </Reference>
     <Reference Include="SharpDX">
       <HintPath>..\..\..\..\SharpDX.dll</HintPath>
       <Private>False</Private>
+    </Reference>
+    <Reference Include="SharpDX.Desktop">
+      <HintPath>..\..\..\..\..\SharpDX.Desktop.dll</HintPath>
     </Reference>
     <Reference Include="SharpDX.Direct3D9">
       <HintPath>..\..\..\..\SharpDX.Direct3D9.dll</HintPath>
